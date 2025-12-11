@@ -5,24 +5,25 @@ require('dotenv').config({ path: '.env.development' })
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+app.use(cors({origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']}));
 
 // 1. 添加请求体解析调试
 app.use((req, res, next) => {
   console.log('进入')
-  
   next();
 });
 
 
 // 2. Body 解析中间件
-app.use(express.json());
+app.use(express.json({limit: '10mb' }));
 
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true,limit: '10mb'  }));
 
-
+const chatRoutes = require('./routes/chat');
 // 4. 路由
-app.use('/api/chat', require('./routes/chat'));
+app.use('/api/chat', chatRoutes);
 
 app.get('/api/health', (req, res) => {
   console.log('健康检查被调用');

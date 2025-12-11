@@ -1,5 +1,6 @@
 // controllers/chatControllers.js - 修复版
 const axios = require('axios');
+const { Transform } = require('stream');
 
 // ==================== 会话历史管理 ====================
 // 按session存储对话历史
@@ -62,6 +63,161 @@ function cleanupHistory(history, maxRounds = 10) {
   return history;
 }
 
+// ==================== 流式处理工具 ====================
+/**
+ * 创建流式转换器
+ */
+class SSEStream extends Transform {
+  constructor() {
+    super({
+      writableObjectMode: true
+    });
+  }
+  
+  _transform(chunk, encoding, callback) {
+    // 格式化为SSE格式
+    const data = JSON.stringify(chunk);
+    this.push(`data: ${data}\n\n`);
+    callback();
+  }
+}
+
+/**
+ * 处理流式响应
+ */
+async function handleStreamResponse(axiosResponse, res) {
+  // 设置SSE响应头
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // 禁用Nginx缓冲
+  
+  const stream = new SSEStream();
+  stream.pipe(res);
+  
+  let fullContent = '';
+  
+  try {
+    // 监听AI API的流式响应
+    for await (const chunk of axiosResponse.data) {
+      const chunkStr = chunk.toString();
+      
+      // 解析SSE格式
+      const lines = chunkStr.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.substring(6);
+          
+          if (dataStr === '[DONE]') {
+            stream.write({ type: 'done' });
+            break;
+          }
+          
+          try {
+            const data = JSON.parse(dataStr);
+            
+            // 提取增量内容
+            const delta = data.choices?.[0]?.delta;
+            if (delta?.content) {
+              fullContent += delta.content;
+              
+              // 发送给前端
+              stream.write({
+                id: data.id,
+                object: data.object,
+                created: data.created,
+                model: data.model,
+                choices: [{
+                  index: 0,
+                  delta: { content: delta.content },
+                  finish_reason: null
+                }]
+              });
+            }
+            
+            // 检查是否完成
+            if (data.choices?.[0]?.finish_reason) {
+              stream.write({
+                choices: [{
+                  index: 0,
+                  delta: { content: '' },
+                  finish_reason: data.choices[0].finish_reason
+                }]
+              });
+            }
+            
+          } catch (parseError) {
+            console.error('解析流数据失败:', parseError);
+          }
+        }
+      }
+    }
+    
+    // 发送完成标记
+    stream.write({ type: 'done' });
+    
+  } catch (error) {
+    console.error('流式处理错误:', error);
+    stream.write({
+      error: '流式响应处理失败',
+      message: error.message
+    });
+  } finally {
+    stream.end();
+    
+    // 记录完整的回复（可选）
+    if (fullContent) {
+      console.log('完整回复内容:', fullContent);
+    }
+  }
+}
+
+/**
+ * 发送固定回复作为流式响应（模拟打字效果）
+ */
+function sendFixedReplyAsStream(reply, res) {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  
+  // 模拟打字机效果
+  let index = 0;
+  const chunkSize = 3; // 每次发送的字符数
+  const interval = 50; // 间隔时间(ms)
+  
+  const sendNextChunk = () => {
+    if (index < reply.length) {
+      const chunk = reply.substring(index, Math.min(index + chunkSize, reply.length));
+      index += chunkSize;
+      
+      // 发送数据
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          index: 0,
+          delta: { content: chunk },
+          finish_reason: null
+        }]
+      })}\n\n`);
+      
+      setTimeout(sendNextChunk, interval);
+    } else {
+      // 发送完成
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          index: 0,
+          delta: { content: '' },
+          finish_reason: 'stop'
+        }]
+      })}\n\n`);
+      
+      res.write('data: [DONE]\n\n');
+      res.end();
+    }
+  };
+  
+  sendNextChunk();
+}
+
 // ==================== 固定回复系统 ====================
 /**
  * 检查是否有固定回复（优先级最高）
@@ -81,17 +237,71 @@ function checkFixedReply(userMessage) {
       reply: '不客气！很高兴能帮助您。如果还有其他问题，随时问我哦！😄',
       category: 'thanks'
     },
-    {
+   {
+      // 告别类
       patterns: ['再见', '拜拜', '结束', '88', 'goodbye', 'bye', '结束对话'],
       reply: '感谢您的咨询！祝您有愉快的一天！如有需要，随时回来找我。👋',
       category: 'farewell'
+    },
+    {
+      // 客服转接
+      patterns: ['人工', '真人', '转人工', '人工客服', '找人工', '活人'],
+      reply: '如果您需要人工客服协助，请拨打我们的客服热线：400-xxxx-xxxx\n工作时间：周一至周五 9:00-18:00',
+      category: 'human_service'
+    },
+    {
+      // 工作时间
+      patterns: ['时间', '营业', '几点', '上班', '下班', '工作时间', '几点下班'],
+      reply: '我们的工作时间是：\n📅 周一至周五：9:00-18:00\n🚫 周末和法定节假日休息',
+      category: 'working_hours'
+    },
+    {
+      // 地址信息
+      patterns: ['地址', '位置', '在哪', '公司地址', 'location', 'where'],
+      reply: '公司地址：XX省XX市XX区XX路XX号XX大厦XX层\n📍 您可以在官网"联系我们"页面查看详细地图和交通指南',
+      category: 'address'
+    },
+    {
+      // 联系方式
+      patterns: ['电话', '手机', '联系方式', '怎么联系', '联系你们'],
+      reply: '📞 客服热线：400-xxxx-xxxx\n📧 客服邮箱：support@example.com\n💬 在线咨询：工作日 9:00-18:00',
+      category: 'contact'
+    },
+    {
+      // 产品服务
+      patterns: ['产品', '服务', '功能', '有什么服务', '提供什么'],
+      reply: '我们提供以下服务：\n✅ 企业解决方案\n✅ 技术支持服务\n✅ 咨询与培训\n✅ 定制化开发\n🔗 详情请访问官网"产品服务"板块',
+      category: 'products'
+    },
+    {
+      // 价格费用
+      patterns: ['价格', '多少钱', '费用', '收费', '价格表', '多少钱', '报价'],
+      reply: '💰 具体价格根据您的需求而定：\n1. 基础版：XXXX元/年\n2. 专业版：XXXX元/年\n3. 企业版：请联系销售顾问\n📋 完整价目表请访问官网',
+      category: 'pricing'
+    },
+    {
+      // 使用方法
+      patterns: ['怎么用', '如何使用', '教程', '帮助', '使用说明', '怎么操作'],
+      reply: '📚 使用指南：\n1. 访问官网"帮助中心"\n2. 下载用户手册（PDF）\n3. 观看教程视频\n4. 参加在线培训课程\n💡 需要具体帮助请告诉我您遇到的问题',
+      category: 'usage'
+    },
+    {
+      // 问题故障
+      patterns: ['问题', '故障', '错误', 'bug', '无法使用', '用不了', '报错'],
+      reply: '抱歉给您带来不便！🔧\n请尝试：\n1. 刷新页面\n2. 清除缓存\n3. 检查网络连接\n如果问题依旧，请提供：\n📝 具体错误信息\n🖥️ 操作系统和浏览器\n📱 问题发生时间\n我们将尽快为您解决！',
+      category: 'troubleshooting'
+    },
+    {
+      // 关于我们
+      patterns: ['你们公司', '公司介绍', '关于你们', '什么公司', '介绍'],
+      reply: '🏢 公司简介：\n我们是一家专注于企业服务的科技公司，成立于2010年，致力于为客户提供优质的解决方案。\n\n🌟 核心价值：专业、创新、服务、共赢\n\n📖 了解更多请访问官网"关于我们"',
+      category: 'about'
     }
-    // ... 其他固定回复（为了简洁省略部分）
   ];
   
   const exactMatchPatterns = {
-    '你是谁': '我是智能客服助手，专门为您解答问题和提供帮助的AI机器人。🤖',
-    '你叫什么': '我是您的智能客服助手，没有具体的名字，但您可以叫我小助手！😊',
+    '你是谁': '我是智能客服助手，专门为您解答问题和提供帮助的AI机器人小乖乖。🤖',
+    '你叫什么': '我是您的智能客服助手，没有具体的名字，但您可以叫我乖乖！😊',
     // ... 其他完全匹配
   };
   
@@ -340,20 +550,158 @@ async function getGenericReply(userMessage) {
   // 为了简洁，这里省略具体实现
   return `关于"${userMessage}"，我已收到您的问题。由于当前AI服务暂时不可用，建议您联系客服热线：400-xxxx-xxxx`;
 }
-
+// ==================== 流式聊天接口 ====================
+/**
+ * 流式聊天接口
+ * POST /api/chat/stream
+ */
+exports.chatStream = async (req, res) => {
+  const { message, sessionId= 'default'  } = req.body;
+  
+  console.log(`[${sessionId}] 流式请求: ${message}`);
+   // 立即设置流式响应头
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  try {
+    // 1. 检查固定回复
+    const fixedReply = checkFixedReply(message);
+    if (fixedReply.hasFixedReply) {
+      console.log('使用固定回复的流式模拟');
+      return sendFixedReplyAsStream(fixedReply.reply, res);
+    }
+    
+    // 2. 获取API配置
+    const apiConfig = getBestAPIConfig();
+    if (!apiConfig) {
+      console.log('没有可用API，使用通用回复');
+      return sendFixedReplyAsStream(await getGenericReply(message), res);
+    }
+    
+    // 3. 获取会话历史
+    const history = getSessionHistory(sessionId);
+    
+    // 4. 添加用户消息到历史
+    history.push({ role: 'user', content: message });
+    
+    // 5. 调用AI API（流式模式）
+    console.log('调用流式API...');
+    
+    const response = await axios.post(
+      apiConfig.url,
+      {
+        model: apiConfig.model,
+        messages: history,
+        max_tokens: 1000,
+        temperature: 0.7,
+        stream: true  // ✅ 关键：开启流式
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiConfig.apiKey}`,
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream'  // 重要：接受流式响应
+        },
+        responseType: 'stream',  // ✅ 关键：设置响应类型为流
+        timeout: 60000  // 流式请求需要更长的超时时间
+      }
+    );
+    
+    // 6. 处理流式响应
+    let fullContent = '';
+    
+    // 监听数据流
+    response.data.on('data', (chunk) => {
+      const chunkStr = chunk.toString();
+      const lines = chunkStr.split('\n');
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.substring(6);
+          
+          if (dataStr === '[DONE]') {
+            res.write('data: [DONE]\n\n');
+            return;
+          }
+          
+          try {
+            const data = JSON.parse(dataStr);
+            const delta = data.choices?.[0]?.delta;
+            
+            if (delta?.content) {
+              fullContent += delta.content;
+              
+              // 发送给前端
+              res.write(`data: ${JSON.stringify(data)}\n\n`);
+            }
+            
+          } catch (error) {
+            console.error('解析流数据失败:', error);
+          }
+        }
+      }
+    });
+    
+    response.data.on('end', () => {
+      console.log('流式响应结束');
+      
+      // 添加AI回复到历史
+      if (fullContent) {
+        history.push({ role: 'assistant', content: fullContent });
+        
+        // 清理历史长度
+        cleanupHistory(history);
+        
+        console.log(`[${sessionId}] 完整回复长度: ${fullContent.length}`);
+      }
+      
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    
+    response.data.on('error', (error) => {
+      console.error('流式响应错误:', error);
+      res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    
+    // 处理请求中止
+    req.on('close', () => {
+      console.log('客户端关闭连接');
+      response.data.destroy();
+    });
+    
+  } catch (error) {
+    console.error('流式聊天错误:', error);
+    
+    // 发送错误信息
+    res.write(`data: ${JSON.stringify({
+      error: '处理失败',
+      message: error.message
+    })}\n\n`);
+    
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+};
 // ==================== 主导出函数 ====================
 /**
  * 智能客服处理函数（多轮对话版）
  */
-exports.chatWithAI = async (userMessage, sessionId) => {
-  console.log(`\n=== 新消息 [${sessionId}] ===`);
-  console.log(`用户消息: ${userMessage}`);
-  console.log(`消息长度: ${userMessage.length} 字符`);
-  
-  // 记录开始时间
-  const startTime = Date.now();
-  
+// exports.chatWithAI = async (userMessage, sessionId) => {
+ exports.chatWithAI = async (req, res) => {
   try {
+    
+    const { userMessage, sessionId= 'default' } = req.body;
+    if (!message || message.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: '消息不能为空'
+      });
+    }
+    
     // 获取回复
     const result = await getSmartReply(userMessage, sessionId);
     
@@ -370,12 +718,15 @@ exports.chatWithAI = async (userMessage, sessionId) => {
     }
     
     // 返回回复内容
-    return result.reply;
+   res.json({ success: true, result });
     
   } catch (error) {
     console.error(`[${sessionId}] 处理失败:`, error.message);
-    
-    return `抱歉，处理您的消息时出现了技术问题。\n\n请稍后重试，或直接联系客服：400-xxxx-xxxx`;
+    // return `抱歉，处理您的消息时出现了技术问题。\n\n请稍后重试，或直接联系客服：400-xxxx-xxxx`;
+    res.status(500).json({ 
+      success: false, 
+      error: '智能客服暂时不可用' 
+    });
   }
 };
 

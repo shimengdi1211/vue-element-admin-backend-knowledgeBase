@@ -1,7 +1,7 @@
 // controllers/chatControllers.js - 修复版
 const axios = require('axios');
 const { Transform } = require('stream');
-
+const chatModel = require('../models/chatModel'); // 添加模型引用
 // ==================== 会话历史管理 ====================
 // 按session存储对话历史
 const sessionHistories = new Map();

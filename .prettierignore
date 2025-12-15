@@ -1,0 +1,9 @@
+# 忽略不需要格式化的文件/目录
+node_modules/
+dist/
+build/
+coverage/
+*.log
+.env
+.env.local
+.DS_Store

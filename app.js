@@ -1,27 +1,30 @@
 // app.js
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config({ path: '.env.development' })
+require('dotenv').config({ path: '.env.development' });
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors({origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']}));
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 
 // 1. 添加请求体解析调试
 app.use((req, res, next) => {
-  console.log('进入')
+  console.log('进入');
   next();
 });
 
-
 // 2. Body 解析中间件
-app.use(express.json({limit: '10mb' }));
+app.use(express.json({ limit: '10mb' }));
 
-app.use(express.urlencoded({ extended: true,limit: '10mb'  }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-const chatRoutes = require('./routes/chat');
+const chatRoutes = require('./src/routes/chat');
 // 4. 路由
 app.use('/api/chat', chatRoutes);
 
@@ -29,7 +32,6 @@ app.get('/api/health', (req, res) => {
   console.log('健康检查被调用');
   res.json({ status: 'OK', message: '后端服务运行正常' });
 });
-
 
 // 5. 错误处理中间件
 app.use((err, req, res, next) => {

@@ -189,7 +189,45 @@ class ChatModel {
       throw error;
     }
   }
+  async initDatabase() {
+    try {
+      const requiredTables = [
+        'chat_sessions',
+        'chat_messages',
+        // 以后可以添加更多表：
+      ];
+      // 1. 检查表是否存在
+      const result = await db.execute(
+        `
+      SELECT TABLE_NAME 
+      FROM INFORMATION_SCHEMA.TABLES 
+      WHERE TABLE_SCHEMA = ?
+    `,
+        [process.env.DB_NAME || 'chat_assistant']
+      );
+      console.log('results:', result);
+      console.log('🔍 result 是数组吗?', Array.isArray(result));
+      // 确保 result 是数组
+      let tables = Array.isArray(result) ? result : [result];
+      const existingTables = tables.map(t => t.TABLE_NAME);
 
+      // 4. 对比需要创建的表和现有的表
+      const missingTables = requiredTables.filter(table => !existingTables.includes(table));
+      console.log('🔍 缺失的表:', missingTables.length > 0 ? missingTables : '无');
+
+      // 2. 如果表已存在，只更新结构，不重新创建
+      if (existingTables.length == 0) {
+        console.log('✅ 数据库表已全部存在，跳过创建');
+        return;
+      }
+      // 3. 只有表不存在时才创建
+      await this.createTables();
+      console.log('✅ 数据库初始化完成！');
+    } catch (error) {
+      console.error('❌ 数据库初始化失败:', error.message);
+      throw error;
+    }
+  }
   // 创建表格（初始化用）
   async createTables() {
     try {

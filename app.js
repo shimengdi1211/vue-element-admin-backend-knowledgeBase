@@ -2,14 +2,15 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config({ path: '.env.development' });
-const db = require('./config/database'); // 添加数据库连接
-const chatModel = require('./models/chatModel'); // 添加模型
+const db = require('./src/config/database'); // 添加数据库连接
+const chatModel = require('./src/models/chatModel'); // 添加模型
 const app = express();
 const PORT = process.env.PORT || 3000;
 // 数据库初始化
 async function initializeDatabase() {
   try {
-    await chatModel.createTables();
+    await chatModel.initDatabase();
+
     console.log('数据库初始化完成');
   } catch (error) {
     console.error('数据库初始化失败:', error);

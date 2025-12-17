@@ -63,6 +63,433 @@ function cleanupHistory(history, maxRounds = 10) {
   return history;
 }
 
+// ==================== AI API 调用 ====================
+/**
+ * 获取最佳可用的 API 配置
+ */
+function getBestAPIConfig() {
+  const providers = [
+    {
+      name: 'ollama AI',
+      url: `${process.env.OLLAMA_BASE_URL}/api/chat`,
+      model: process.env.DEFAULT_MODEL || 'llama3.2:3b',
+      enabled: process.env.OLLAMA_BASE_URL && process.env.DEFAULT_MODEL,
+    },
+    {
+      name: 'Moonshot AI',
+      url: `${process.env.MOONSHOT_API_URL}/chat/completions`,
+      apiKey: process.env.MOONSHOT_API_KEY,
+      model: `${process.env.MOONSHOT_MODEL || 'moonshot-v1-8k'}`,
+      enabled:
+        process.env.MOONSHOT_API_KEY &&
+        process.env.MOONSHOT_API_KEY.length > 20 &&
+        !process.env.MOONSHOT_API_KEY.includes('your_'),
+    },
+    {
+      name: 'DeepSeek',
+      url: `${process.env.DEEPSEEK_API_URL}/chat/completions`,
+      apiKey: process.env.DEEPSEEK_API_KEY,
+      model: `${process.env.DEEPSEEK_MODEL || 'deepseek-chat'}`,
+      enabled:
+        process.env.DEEPSEEK_API_KEY &&
+        process.env.DEEPSEEK_API_KEY.length > 20 &&
+        !process.env.DEEPSEEK_API_KEY.includes('your_'),
+    },
+  ];
+
+  return providers.find(p => p.enabled) || null;
+}
+
+// ==================== 固定回复系统 ====================
+/**
+ * 检查是否有固定回复（优先级最高）
+ * 如果有匹配，直接返回固定回复，不调用API
+ */
+function checkFixedReply(userMessage) {
+  console.log('检查固定回复...');
+
+  const fixedReplies = [
+    {
+      patterns: ['你好', '您好', 'hi', 'hello', 'hey', '哈喽', '在吗', '在么'],
+      reply: '您好！我是智能客服助手，有什么可以帮助您的吗？😊',
+      category: 'greeting',
+    },
+    {
+      patterns: ['谢谢', '感谢', '多谢', 'thx', 'thanks'],
+      reply: '不客气！很高兴能帮助您。如果还有其他问题，随时问我哦！😄',
+      category: 'thanks',
+    },
+    {
+      // 告别类
+      patterns: ['再见', '拜拜', '结束', '88', 'goodbye', 'bye', '结束对话'],
+      reply: '感谢您的咨询！祝您有愉快的一天！如有需要，随时回来找我。👋',
+      category: 'farewell',
+    },
+    {
+      // 客服转接
+      patterns: ['人工', '真人', '转人工', '人工客服', '找人工', '活人'],
+      reply:
+        '如果您需要人工客服协助，请拨打我们的客服热线：400-xxxx-xxxx\n工作时间：周一至周五 9:00-18:00',
+      category: 'human_service',
+    },
+    {
+      // 工作时间
+      patterns: ['时间', '营业', '几点', '上班', '下班', '工作时间', '几点下班'],
+      reply: '我们的工作时间是：\n📅 周一至周五：9:00-18:00\n🚫 周末和法定节假日休息',
+      category: 'working_hours',
+    },
+    {
+      // 地址信息
+      patterns: ['地址', '位置', '在哪', '公司地址', 'location', 'where'],
+      reply:
+        '公司地址：XX省XX市XX区XX路XX号XX大厦XX层\n📍 您可以在官网"联系我们"页面查看详细地图和交通指南',
+      category: 'address',
+    },
+    {
+      // 联系方式
+      patterns: ['电话', '手机', '联系方式', '怎么联系', '联系你们'],
+      reply:
+        '📞 客服热线：400-xxxx-xxxx\n📧 客服邮箱：support@example.com\n💬 在线咨询：工作日 9:00-18:00',
+      category: 'contact',
+    },
+    {
+      // 产品服务
+      patterns: ['产品', '服务', '功能', '有什么服务', '提供什么'],
+      reply:
+        '我们提供以下服务：\n✅ 企业解决方案\n✅ 技术支持服务\n✅ 咨询与培训\n✅ 定制化开发\n🔗 详情请访问官网"产品服务"板块',
+      category: 'products',
+    },
+    {
+      // 价格费用
+      patterns: ['价格', '多少钱', '费用', '收费', '价格表', '多少钱', '报价'],
+      reply:
+        '💰 具体价格根据您的需求而定：\n1. 基础版：XXXX元/年\n2. 专业版：XXXX元/年\n3. 企业版：请联系销售顾问\n📋 完整价目表请访问官网',
+      category: 'pricing',
+    },
+    {
+      // 使用方法
+      patterns: ['怎么用', '如何使用', '教程', '帮助', '使用说明', '怎么操作'],
+      reply:
+        '📚 使用指南：\n1. 访问官网"帮助中心"\n2. 下载用户手册（PDF）\n3. 观看教程视频\n4. 参加在线培训课程\n💡 需要具体帮助请告诉我您遇到的问题',
+      category: 'usage',
+    },
+    {
+      // 问题故障
+      patterns: ['问题', '故障', '错误', 'bug', '无法使用', '用不了', '报错'],
+      reply:
+        '抱歉给您带来不便！🔧\n请尝试：\n1. 刷新页面\n2. 清除缓存\n3. 检查网络连接\n如果问题依旧，请提供：\n📝 具体错误信息\n🖥️ 操作系统和浏览器\n📱 问题发生时间\n我们将尽快为您解决！',
+      category: 'troubleshooting',
+    },
+    {
+      // 关于我们
+      patterns: ['你们公司', '公司介绍', '关于你们', '什么公司', '介绍'],
+      reply:
+        '🏢 公司简介：\n我们是一家专注于企业服务的科技公司，成立于2010年，致力于为客户提供优质的解决方案。\n\n🌟 核心价值：专业、创新、服务、共赢\n\n📖 了解更多请访问官网"关于我们"',
+      category: 'about',
+    },
+  ];
+
+  const exactMatchPatterns = {
+    你是谁: '我是智能客服助手，专门为您解答问题和提供帮助的AI机器人小乖乖。🤖',
+    你叫什么: '我是您的智能客服助手，没有具体的名字，但您可以叫我乖乖！😊',
+    // ... 其他完全匹配
+  };
+
+  const lowerMsg = userMessage.toLowerCase().trim();
+  const exactMsg = userMessage.trim();
+
+  // 1. 完全匹配
+  if (exactMatchPatterns[exactMsg]) {
+    return {
+      hasFixedReply: true,
+      reply: exactMatchPatterns[exactMsg],
+      matchType: 'exact',
+      category: 'direct_match',
+    };
+  }
+
+  // 2. 关键词匹配
+  for (const item of fixedReplies) {
+    if (item.patterns.some(pattern => lowerMsg.includes(pattern))) {
+      return {
+        hasFixedReply: true,
+        reply: item.reply,
+        matchType: 'keyword',
+        category: item.category,
+      };
+    }
+  }
+
+  return {
+    hasFixedReply: false,
+    reply: null,
+    matchType: 'none',
+  };
+}
+
+// ==================== 流式聊天接口 ====================
+/**
+ * 流式聊天接口
+ * POST /api/chat/stream
+ */
+exports.chatStream = async (req, res) => {
+  const { message, sessionId = 'default' } = req.body;
+
+  console.log(`[${sessionId}] 流式请求: ${message}`);
+  // 立即设置流式响应头
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  try {
+    // 1. 检查固定回复
+    const fixedReply = checkFixedReply(message);
+    if (fixedReply.hasFixedReply) {
+      console.log('使用固定回复的流式模拟');
+      return sendFixedReplyAsStream(fixedReply.reply, res);
+    }
+
+    // 2. 获取API配置
+    const apiConfig = getBestAPIConfig();
+    if (!apiConfig) {
+      console.log('没有可用API，使用通用回复');
+      return sendFixedReplyAsStream(await getGenericReply(message), res);
+    }
+
+    // 3. 获取会话历史
+    const history = getSessionHistory(sessionId);
+
+    // 4. 添加用户消息到历史
+    history.push({ role: 'user', content: message });
+
+    // 5. 调用AI API（流式模式）
+    console.log('调用流式API...', apiConfig.name);
+    let requestBody;
+    if (apiConfig.name === 'ollama AI') {
+      // Ollama 专用格式
+      requestBody = {
+        model: apiConfig.model,
+        messages: history,
+        stream: true,
+        options: {
+          temperature: 0.7,
+          num_predict: 2000,
+        },
+      };
+    } else {
+      // 云端服务格式
+      requestBody = {
+        model: apiConfig.model,
+        messages: history,
+        max_tokens: 1000,
+        temperature: 0.7,
+        stream: true,
+      };
+    }
+    const response = await axios.post(apiConfig.url, requestBody, {
+      headers: {
+        ...(apiConfig.apiKey ? { Authorization: `Bearer ${apiConfig.apiKey}` } : {}), // Ollama 不需要
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream', // 重要：接受流式响应
+      },
+      responseType: 'stream', // ✅ 关键：设置响应类型为流
+      timeout: 120000, // 流式请求需要更长的超时时间
+    });
+
+    // 6. 处理流式响应
+    let fullContent = '';
+    // 监听数据流
+    if (apiConfig.name === 'ollama AI') {
+      // ✅ 处理 Ollama 的 ndjson 格式
+      await handleOllamaStream(
+        response.data,
+        res,
+        content => {
+          fullContent += content;
+          return content;
+        },
+        sessionId
+      );
+    } else {
+      // ✅ 处理云端服务的 SSE 格式
+      await handleCloudStream(
+        response.data,
+        res,
+        content => {
+          fullContent += content;
+          return content;
+        },
+        sessionId
+      );
+    }
+
+    // 添加AI回复到历史
+    if (fullContent) {
+      history.push({ role: 'assistant', content: fullContent });
+
+      // 清理历史长度
+      cleanupHistory(history);
+
+      console.log(`[${sessionId}] 完整回复长度: ${fullContent.length}`);
+    }
+
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (error) {
+    console.error('流式聊天错误:', error);
+
+    // 发送错误信息
+    res.write(
+      `data: ${JSON.stringify({
+        error: '处理失败',
+        message: error.message,
+      })}\n\n`
+    );
+
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+};
+// ==================== Ollama 流式处理函数 ====================
+/**
+ * 处理 Ollama 的 ndjson 流式响应
+ */
+async function handleOllamaStream(stream, res, onChunk, sessionId) {
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+
+    stream.on('data', chunk => {
+      buffer += chunk.toString();
+
+      // 按行分割（ndjson 每行是一个完整的 JSON）
+      const lines = buffer.split('\n');
+
+      // 保留最后一行（可能不完整）
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const data = JSON.parse(line);
+
+            // ✅ Ollama 流式响应格式
+            if (data.message?.content) {
+              const content = data.message.content;
+              onChunk(content);
+
+              // 转换为前端需要的 SSE 格式
+              res.write(
+                `data: ${JSON.stringify({
+                  choices: [
+                    {
+                      index: 0,
+                      delta: { content: content },
+                      finish_reason: null,
+                    },
+                  ],
+                })}\n\n`
+              );
+            }
+
+            // 检查是否完成
+            if (data.done) {
+              console.log(`[${sessionId}] Ollama 流式完成`);
+            }
+          } catch (error) {
+            console.error('解析 Ollama ndjson 失败:', error, '原始数据:', line);
+          }
+        }
+      }
+    });
+
+    stream.on('end', () => {
+      // 处理剩余缓冲
+      if (buffer.trim()) {
+        try {
+          const data = JSON.parse(buffer);
+          if (data.message?.content) {
+            const content = data.message.content;
+            onChunk(content);
+
+            res.write(
+              `data: ${JSON.stringify({
+                choices: [
+                  {
+                    index: 0,
+                    delta: { content: content },
+                    finish_reason: 'stop',
+                  },
+                ],
+              })}\n\n`
+            );
+          }
+        } catch (error) {
+          console.error('解析最后一行失败:', error);
+        }
+      }
+      resolve();
+    });
+
+    stream.on('error', error => {
+      console.error('Ollama 流错误:', error);
+      reject(error);
+    });
+  });
+}
+
+// ==================== 云端服务流式处理函数 ====================
+/**
+ * 处理云端服务（MoonShot/DeepSeek）的 SSE 流式响应
+ */
+async function handleCloudStream(stream, res, onChunk, sessionId) {
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+
+    stream.on('data', chunk => {
+      buffer += chunk.toString();
+
+      // 云端服务使用 SSE 格式：data: {...}\n\n
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.substring(6);
+
+          if (dataStr === '[DONE]') {
+            resolve();
+            return;
+          }
+
+          try {
+            const data = JSON.parse(dataStr);
+            const delta = data.choices?.[0]?.delta;
+
+            if (delta?.content) {
+              const content = delta.content;
+              onChunk(content);
+
+              // 直接转发给前端
+              res.write(`data: ${JSON.stringify(data)}\n\n`);
+            }
+          } catch (error) {
+            console.error('解析云端流数据失败:', error);
+          }
+        }
+      }
+    });
+
+    stream.on('end', () => {
+      resolve();
+    });
+
+    stream.on('error', error => {
+      console.error('云端流错误:', error);
+      reject(error);
+    });
+  });
+}
+
 // ==================== 流式处理工具 ====================
 /**
  * 创建流式转换器
@@ -228,164 +655,6 @@ function sendFixedReplyAsStream(reply, res) {
   sendNextChunk();
 }
 
-// ==================== 固定回复系统 ====================
-/**
- * 检查是否有固定回复（优先级最高）
- * 如果有匹配，直接返回固定回复，不调用API
- */
-function checkFixedReply(userMessage) {
-  console.log('检查固定回复...');
-
-  const fixedReplies = [
-    {
-      patterns: ['你好', '您好', 'hi', 'hello', 'hey', '哈喽', '在吗', '在么'],
-      reply: '您好！我是智能客服助手，有什么可以帮助您的吗？😊',
-      category: 'greeting',
-    },
-    {
-      patterns: ['谢谢', '感谢', '多谢', 'thx', 'thanks'],
-      reply: '不客气！很高兴能帮助您。如果还有其他问题，随时问我哦！😄',
-      category: 'thanks',
-    },
-    {
-      // 告别类
-      patterns: ['再见', '拜拜', '结束', '88', 'goodbye', 'bye', '结束对话'],
-      reply: '感谢您的咨询！祝您有愉快的一天！如有需要，随时回来找我。👋',
-      category: 'farewell',
-    },
-    {
-      // 客服转接
-      patterns: ['人工', '真人', '转人工', '人工客服', '找人工', '活人'],
-      reply:
-        '如果您需要人工客服协助，请拨打我们的客服热线：400-xxxx-xxxx\n工作时间：周一至周五 9:00-18:00',
-      category: 'human_service',
-    },
-    {
-      // 工作时间
-      patterns: ['时间', '营业', '几点', '上班', '下班', '工作时间', '几点下班'],
-      reply: '我们的工作时间是：\n📅 周一至周五：9:00-18:00\n🚫 周末和法定节假日休息',
-      category: 'working_hours',
-    },
-    {
-      // 地址信息
-      patterns: ['地址', '位置', '在哪', '公司地址', 'location', 'where'],
-      reply:
-        '公司地址：XX省XX市XX区XX路XX号XX大厦XX层\n📍 您可以在官网"联系我们"页面查看详细地图和交通指南',
-      category: 'address',
-    },
-    {
-      // 联系方式
-      patterns: ['电话', '手机', '联系方式', '怎么联系', '联系你们'],
-      reply:
-        '📞 客服热线：400-xxxx-xxxx\n📧 客服邮箱：support@example.com\n💬 在线咨询：工作日 9:00-18:00',
-      category: 'contact',
-    },
-    {
-      // 产品服务
-      patterns: ['产品', '服务', '功能', '有什么服务', '提供什么'],
-      reply:
-        '我们提供以下服务：\n✅ 企业解决方案\n✅ 技术支持服务\n✅ 咨询与培训\n✅ 定制化开发\n🔗 详情请访问官网"产品服务"板块',
-      category: 'products',
-    },
-    {
-      // 价格费用
-      patterns: ['价格', '多少钱', '费用', '收费', '价格表', '多少钱', '报价'],
-      reply:
-        '💰 具体价格根据您的需求而定：\n1. 基础版：XXXX元/年\n2. 专业版：XXXX元/年\n3. 企业版：请联系销售顾问\n📋 完整价目表请访问官网',
-      category: 'pricing',
-    },
-    {
-      // 使用方法
-      patterns: ['怎么用', '如何使用', '教程', '帮助', '使用说明', '怎么操作'],
-      reply:
-        '📚 使用指南：\n1. 访问官网"帮助中心"\n2. 下载用户手册（PDF）\n3. 观看教程视频\n4. 参加在线培训课程\n💡 需要具体帮助请告诉我您遇到的问题',
-      category: 'usage',
-    },
-    {
-      // 问题故障
-      patterns: ['问题', '故障', '错误', 'bug', '无法使用', '用不了', '报错'],
-      reply:
-        '抱歉给您带来不便！🔧\n请尝试：\n1. 刷新页面\n2. 清除缓存\n3. 检查网络连接\n如果问题依旧，请提供：\n📝 具体错误信息\n🖥️ 操作系统和浏览器\n📱 问题发生时间\n我们将尽快为您解决！',
-      category: 'troubleshooting',
-    },
-    {
-      // 关于我们
-      patterns: ['你们公司', '公司介绍', '关于你们', '什么公司', '介绍'],
-      reply:
-        '🏢 公司简介：\n我们是一家专注于企业服务的科技公司，成立于2010年，致力于为客户提供优质的解决方案。\n\n🌟 核心价值：专业、创新、服务、共赢\n\n📖 了解更多请访问官网"关于我们"',
-      category: 'about',
-    },
-  ];
-
-  const exactMatchPatterns = {
-    你是谁: '我是智能客服助手，专门为您解答问题和提供帮助的AI机器人小乖乖。🤖',
-    你叫什么: '我是您的智能客服助手，没有具体的名字，但您可以叫我乖乖！😊',
-    // ... 其他完全匹配
-  };
-
-  const lowerMsg = userMessage.toLowerCase().trim();
-  const exactMsg = userMessage.trim();
-
-  // 1. 完全匹配
-  if (exactMatchPatterns[exactMsg]) {
-    return {
-      hasFixedReply: true,
-      reply: exactMatchPatterns[exactMsg],
-      matchType: 'exact',
-      category: 'direct_match',
-    };
-  }
-
-  // 2. 关键词匹配
-  for (const item of fixedReplies) {
-    if (item.patterns.some(pattern => lowerMsg.includes(pattern))) {
-      return {
-        hasFixedReply: true,
-        reply: item.reply,
-        matchType: 'keyword',
-        category: item.category,
-      };
-    }
-  }
-
-  return {
-    hasFixedReply: false,
-    reply: null,
-    matchType: 'none',
-  };
-}
-
-// ==================== AI API 调用 ====================
-/**
- * 获取最佳可用的 API 配置
- */
-function getBestAPIConfig() {
-  const providers = [
-    {
-      name: 'Moonshot AI',
-      url: 'https://api.moonshot.cn/v1/chat/completions',
-      apiKey: process.env.MOONSHOT_API_KEY,
-      model: 'moonshot-v1-8k',
-      enabled:
-        process.env.MOONSHOT_API_KEY &&
-        process.env.MOONSHOT_API_KEY.length > 20 &&
-        !process.env.MOONSHOT_API_KEY.includes('your_'),
-    },
-    {
-      name: 'DeepSeek',
-      url: 'https://api.deepseek.com/chat/completions',
-      apiKey: process.env.DEEPSEEK_API_KEY,
-      model: 'deepseek-chat',
-      enabled:
-        process.env.DEEPSEEK_API_KEY &&
-        process.env.DEEPSEEK_API_KEY.length > 20 &&
-        !process.env.DEEPSEEK_API_KEY.includes('your_'),
-    },
-  ];
-
-  return providers.find(p => p.enabled) || null;
-}
-
 /**
  * 调用 AI API（多轮对话版）
  */
@@ -403,17 +672,43 @@ async function callAIAPI(userMessage, apiConfig, history) {
     // 2. 调试：打印将要发送的消息
     console.log('发送给API的完整 messages:');
     console.log(JSON.stringify(history, null, 2));
+    let requestBody;
+    let headers = {
+      'Content-Type': 'application/json',
+    };
 
-    // 3. 调用API
-    const response = await axios.post(
-      apiConfig.url,
-      {
+    if (apiConfig.name === 'ollama AI') {
+      // ✅ Ollama 专用格式
+      requestBody = {
+        model: apiConfig.model,
+        messages: history,
+        stream: false,
+        options: {
+          temperature: 0.7,
+          num_predict: 2000, // Ollama 的参数名
+        },
+      };
+      // Ollama 不需要 Authorization header
+    } else {
+      // ✅ 云端服务格式（MoonShot/DeepSeek）
+      requestBody = {
         model: apiConfig.model,
         messages: history,
         max_tokens: 800,
         temperature: 0.7,
         top_p: 0.9,
-        stream: false, //非流式返回
+        stream: false,
+      };
+      headers['Authorization'] = `Bearer ${apiConfig.apiKey}`;
+    }
+
+    // 3. 调用API
+    const response = await axios.post(
+      apiConfig.url,
+      requestBody,
+      {
+        headers,
+        timeout: 20000,
       },
       {
         headers: {
@@ -430,7 +725,21 @@ async function callAIAPI(userMessage, apiConfig, history) {
       throw new Error('API 返回数据格式错误');
     }
 
-    const aiMessage = response.data.choices[0].message;
+    let aiMessage;
+
+    if (apiConfig.name === 'ollama AI') {
+      // Ollama 响应格式
+      aiMessage = {
+        role: 'assistant',
+        content: response.data.message?.content || '',
+      };
+    } else {
+      // 云端服务响应格式
+      aiMessage = response.data.choices?.[0]?.message || {
+        role: 'assistant',
+        content: '',
+      };
+    }
 
     // 5. 添加AI回复到历史
     history.push(aiMessage);
@@ -560,155 +869,11 @@ async function getSmartReply(userMessage, sessionId) {
   }
 }
 
-/**
- * 生成通用回复
- */
-async function getGenericReply(userMessage) {
-  // ... 保持原来的通用回复逻辑不变
-  // 为了简洁，这里省略具体实现
-  return `关于"${userMessage}"，我已收到您的问题。由于当前AI服务暂时不可用，建议您联系客服热线：400-xxxx-xxxx`;
-}
-// ==================== 流式聊天接口 ====================
-/**
- * 流式聊天接口
- * POST /api/chat/stream
- */
-exports.chatStream = async (req, res) => {
-  const { message, sessionId = 'default' } = req.body;
-
-  console.log(`[${sessionId}] 流式请求: ${message}`);
-  // 立即设置流式响应头
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  try {
-    // 1. 检查固定回复
-    const fixedReply = checkFixedReply(message);
-    if (fixedReply.hasFixedReply) {
-      console.log('使用固定回复的流式模拟');
-      return sendFixedReplyAsStream(fixedReply.reply, res);
-    }
-
-    // 2. 获取API配置
-    const apiConfig = getBestAPIConfig();
-    if (!apiConfig) {
-      console.log('没有可用API，使用通用回复');
-      return sendFixedReplyAsStream(await getGenericReply(message), res);
-    }
-
-    // 3. 获取会话历史
-    const history = getSessionHistory(sessionId);
-
-    // 4. 添加用户消息到历史
-    history.push({ role: 'user', content: message });
-
-    // 5. 调用AI API（流式模式）
-    console.log('调用流式API...');
-
-    const response = await axios.post(
-      apiConfig.url,
-      {
-        model: apiConfig.model,
-        messages: history,
-        max_tokens: 1000,
-        temperature: 0.7,
-        stream: true, // ✅ 关键：开启流式
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${apiConfig.apiKey}`,
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream', // 重要：接受流式响应
-        },
-        responseType: 'stream', // ✅ 关键：设置响应类型为流
-        timeout: 60000, // 流式请求需要更长的超时时间
-      }
-    );
-
-    // 6. 处理流式响应
-    let fullContent = '';
-
-    // 监听数据流
-    response.data.on('data', chunk => {
-      const chunkStr = chunk.toString();
-      const lines = chunkStr.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const dataStr = line.substring(6);
-
-          if (dataStr === '[DONE]') {
-            res.write('data: [DONE]\n\n');
-            return;
-          }
-
-          try {
-            const data = JSON.parse(dataStr);
-            const delta = data.choices?.[0]?.delta;
-
-            if (delta?.content) {
-              fullContent += delta.content;
-
-              // 发送给前端
-              res.write(`data: ${JSON.stringify(data)}\n\n`);
-            }
-          } catch (error) {
-            console.error('解析流数据失败:', error);
-          }
-        }
-      }
-    });
-
-    response.data.on('end', () => {
-      console.log('流式响应结束');
-
-      // 添加AI回复到历史
-      if (fullContent) {
-        history.push({ role: 'assistant', content: fullContent });
-
-        // 清理历史长度
-        cleanupHistory(history);
-
-        console.log(`[${sessionId}] 完整回复长度: ${fullContent.length}`);
-      }
-
-      res.write('data: [DONE]\n\n');
-      res.end();
-    });
-
-    response.data.on('error', error => {
-      console.error('流式响应错误:', error);
-      res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
-      res.write('data: [DONE]\n\n');
-      res.end();
-    });
-
-    // 处理请求中止
-    req.on('close', () => {
-      console.log('客户端关闭连接');
-      response.data.destroy();
-    });
-  } catch (error) {
-    console.error('流式聊天错误:', error);
-
-    // 发送错误信息
-    res.write(
-      `data: ${JSON.stringify({
-        error: '处理失败',
-        message: error.message,
-      })}\n\n`
-    );
-
-    res.write('data: [DONE]\n\n');
-    res.end();
-  }
-};
 // ==================== 主导出函数 ====================
 /**
- * 智能客服处理函数（多轮对话版）
+ * 智能客服处理函数（多轮对话非流式版）
+ * /api/chat
  */
-// exports.chatWithAI = async (userMessage, sessionId) => {
 exports.chatWithAI = async (req, res) => {
   try {
     const { userMessage, sessionId = 'default' } = req.body;
@@ -774,6 +939,14 @@ exports.clearChatHistory = sessionId => {
   return false;
 };
 
+/**
+ * 生成通用回复
+ */
+async function getGenericReply(userMessage) {
+  // ... 保持原来的通用回复逻辑不变
+  // 为了简洁，这里省略具体实现
+  return `关于"${userMessage}"，我已收到您的问题。由于当前AI服务暂时不可用，建议您联系客服热线：400-xxxx-xxxx`;
+}
 /**
  * 获取所有活跃会话
  */

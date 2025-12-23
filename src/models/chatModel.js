@@ -190,6 +190,12 @@ class ChatModel {
     }
   }
   async initDatabase() {
+    console.log('当前数据库配置:', {
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+    });
     try {
       const requiredTables = [
         'chat_sessions',
@@ -216,7 +222,7 @@ class ChatModel {
       console.log('🔍 缺失的表:', missingTables.length > 0 ? missingTables : '无');
 
       // 2. 如果表已存在，只更新结构，不重新创建
-      if (existingTables.length == 0) {
+      if (existingTables.length == 0 && result.length !== 0) {
         console.log('✅ 数据库表已全部存在，跳过创建');
         return;
       }

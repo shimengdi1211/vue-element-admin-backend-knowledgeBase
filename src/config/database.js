@@ -11,16 +11,19 @@ class Database {
   init() {
     try {
       this.pool = mysql.createPool({
-        host: process.env.DB_HOST || 'localhost',
+        host: process.env.DB_HOST || '127.0.0.1',
         user: process.env.DB_USER || 'root',
-        password: process.env.DB_PASSWORD || '',
+        password: process.env.DB_PASSWORD || '123456',
         database: process.env.DB_NAME || 'chat_assistant',
-        port: process.env.DB_PORT || 3306,
+        port: process.env.DB_PORT || 3307,
         waitForConnections: true,
         connectionLimit: 10,
         queueLimit: 0,
         enableKeepAlive: true,
         keepAliveInitialDelay: 0,
+        timezone: '+08:00',
+        charset: 'utf8mb4',
+        decimalNumbers: true,
       });
 
       console.log('MySQL连接池已创建');

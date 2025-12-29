@@ -2,6 +2,7 @@
 const axios = require('axios');
 const { Transform } = require('stream');
 const chatModel = require('../models/chatModel'); // 添加模型引用
+const { callDifyWorkflow } = require('./difyController');
 // ==================== 会话历史管理 ====================
 // 按session存储对话历史
 const sessionHistories = new Map();
@@ -15,10 +16,9 @@ function getSessionHistory(sessionId) {
     sessionHistories.set(sessionId, [
       {
         role: 'system',
-        content: `你是一个专业的客服助手，请按照以下要求回答问题：
+        content: `你是一个专业的投资银行业务顾问，请按照以下要求回答问题：
           # 角色设定：
-          - 你是企业的智能客服助手
-          - 友好、专业、乐于助人
+          - 你是债券承销业务顾问智能客服助手
           - 如果不知道答案，诚实说明
 
           # 回答要求：
@@ -29,7 +29,7 @@ function getSessionHistory(sessionId) {
           5. 适当使用表情符号让对话更友好
 
           # 当前上下文：
-          用户的问题是关于企业服务的，请根据常识和专业知识回答。`,
+            不需要扩充。`,
       },
     ]);
   }
@@ -242,24 +242,38 @@ exports.chatStream = async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   try {
-    // 1. 检查固定回复
-    const fixedReply = checkFixedReply(message);
-    if (fixedReply.hasFixedReply) {
-      console.log('使用固定回复的流式模拟');
-      return sendFixedReplyAsStream(fixedReply.reply, res);
+    // ==================== 第一步：优先调用 Dify 知识库 ====================
+    console.log(`[${sessionId}] 优先调用 Dify 知识库查询...`);
+    const knowledgeResult = await callDifyWorkflow(message, sessionId);
+
+    const isDifyResultValid =
+      knowledgeResult &&
+      knowledgeResult.success === true &&
+      knowledgeResult.answer &&
+      knowledgeResult.answer.trim().length > 0;
+    if (isDifyResultValid) {
+      console.log(' Dify 返回有效答案，直接流式输出');
+      const history = getSessionHistory(sessionId);
+      history.push({ role: 'user', content: message });
+      history.push({
+        role: 'assistant',
+        content: knowledgeResult.answer,
+      });
+      cleanupHistory(history); // 清理历史长度
+      return sendFixedReplyAsStream(knowledgeResult.answer, res);
     }
 
-    // 2. 获取API配置
+    // ===============  Dify 未返回有效答案，继续调用AI接口 ==================
+
+    // 1. 获取API配置
     const apiConfig = getBestAPIConfig();
     if (!apiConfig) {
       console.log('没有可用API，使用通用回复');
       return sendFixedReplyAsStream(await getGenericReply(message), res);
     }
 
-    // 3. 获取会话历史
+    // 2. 获取会话历史
     const history = getSessionHistory(sessionId);
-
-    // 4. 添加用户消息到历史
     history.push({ role: 'user', content: message });
 
     // 5. 调用AI API（流式模式）

@@ -2,9 +2,14 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config({ path: '.env.development' });
+const authRoutes = require('./src/routes/auth');
+const userRoutes = require('./src/routes/user');
+const morgan = require('morgan');
+const helmet = require('helmet');
 const db = require('./src/config/database'); // 添加数据库连接
 const chatModel = require('./src/models/chatModel'); // 添加模型
 const app = express();
+
 const PORT = process.env.PORT || 3000;
 // 数据库初始化
 async function initializeDatabase() {
@@ -56,12 +61,15 @@ app.use((req, res, next) => {
 });
 
 // 2. Body 解析中间件
+app.use(helmet()); // 安全头
 app.use(express.json({ limit: '10mb' }));
-
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(morgan('dev')); // 日志
 
 const chatRoutes = require('./src/routes/chat');
-// 4. 路由
+// 4. 注册路由
+app.use('/api/auth', authRoutes);
+app.use('/api/user', userRoutes);
 app.use('/api/chat', chatRoutes);
 
 app.get('/api/health', (req, res) => {

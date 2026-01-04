@@ -124,7 +124,7 @@ router.get('/menus', authenticate, async (req, res) => {
       SELECT DISTINCT 
         m.id, m.parent_id, m.title, m.name, m.path, 
         m.component, m.icon, m.redirect, m.hidden,
-        m.always_show, m.sort, m.status
+        m.always_show, m.sort, m.status, m.menu_type
       FROM sys_menu m
       LEFT JOIN sys_role_menu rm ON m.id = rm.menu_id
       LEFT JOIN sys_user_role ur ON rm.role_id = ur.role_id
@@ -218,6 +218,7 @@ function generateRoutes(menuTree) {
         title: menu.title,
         icon: menu.icon || '',
         hidden: menu.hidden === 1 || menu.hidden === true,
+        menuType: menu.menu_type,
       },
     };
 
